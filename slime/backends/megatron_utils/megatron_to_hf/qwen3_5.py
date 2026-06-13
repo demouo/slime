@@ -37,6 +37,13 @@ def convert_qwen3_5_to_hf(args, name, param):
     Qwen3.5 uses model.language_model.layers prefix and has separate
     in_proj_qkv, in_proj_z, in_proj_b, in_proj_a for linear attention.
     """
+    # VL model wraps the language model under a `language_model` attribute,
+    # so Megatron param names gain an extra `language_model.` segment:
+    #   module.module.language_model.embedding.* -> module.module.embedding.*
+    #   module.module.language_model.decoder.*   -> module.module.decoder.*
+    # Normalise here so all downstream logic stays unchanged.
+    name = name.replace("module.module.language_model.", "module.module.", 1)
+
     # Handle MTP layers
     if "mtp.layers" in name:
         parts = name.split(".")
@@ -189,5 +196,14 @@ def convert_qwen3_5_to_hf(args, name, param):
         ]:
             rest = rest[len("self_attention.") :]
             return [(f"{prefix}.{rest}", param)]
+
+    # vision_model.** → model.visual.**
+    # Megatron 侧: module.module.vision_model.<rest>
+    # HF 侧:       model.visual.<rest>
+    vision_pattern = r"module\.module\.vision_model\.(.+)"
+    match = re.match(vision_pattern, name)
+    if match:
+        rest = match.group(1)
+        return [(f"model.visual.{rest}", param)]
 
     raise ValueError(f"Unknown parameter name: {name}")

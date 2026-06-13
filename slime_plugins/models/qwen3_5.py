@@ -173,6 +173,17 @@ class Attention(HuggingfaceAttention):
 
         self.linear_attn = Qwen3_5GatedDeltaNet(self.hf_config, self.hf_layer_idx, args=args)
 
+        # hook_hf_module_setattr_for_tp_grad_sync 在每个参数上设置
+        # average_gradients_across_tp_domain=True，让
+        # megatron_chunked_grad_coalesce_patch 对这些 replicated 参数做
+        # ReduceOp.AVG allreduce（而不是 SUM，也不是跳过）。
+        # 不能设 tensor_model_parallel=True——那会把参数排出 DDP bucket 导致
+        # 梯度根本不做 TP 同步，随 step 累积数值误差直到 NaN。
+        # 参考：glm4v_moe.py 对 vision_model 的处理，以及
+        # megatron_chunked_grad_coalesce_patch.py L84-85。
+        from megatron.bridge.utils.common_utils import hook_hf_module_setattr_for_tp_grad_sync
+        hook_hf_module_setattr_for_tp_grad_sync(self.linear_attn)
+
         # Use a simple RMSNorm
         try:
             from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
@@ -182,6 +193,9 @@ class Attention(HuggingfaceAttention):
             from torch.nn import RMSNorm
 
             self.input_layernorm = RMSNorm(self.hf_config.hidden_size, eps=self.hf_config.rms_norm_eps)
+
+        # input_layernorm 同样是 replicated，同样只用 hook，不设 tensor_model_parallel
+        hook_hf_module_setattr_for_tp_grad_sync(self.input_layernorm)
 
     def hf_forward(self, hidden_states, packed_seq_params):
         hidden_states = self.input_layernorm(hidden_states)
